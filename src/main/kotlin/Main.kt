@@ -13,6 +13,7 @@ import java.io.File
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import kotlin.system.exitProcess
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.json.JSONArray
 import org.json.JSONObject
@@ -25,10 +26,59 @@ val config by lazy {
     Json.decodeFromString<Config>(configFile.readText())
 }
 
-suspend fun main() {
+suspend fun main(args: Array<String>) {
+    if (args.isNotEmpty()) {
+        when (args[0].lowercase()) {
+            "view-courses" -> {
+                val courses =
+                    try {
+                        getCanvasClasses().filter { it.id != null }
+                    } catch (_: Exception) {
+                        System.err.println("Could not load courses.")
+                        exitProcess(-1)
+                    }
+
+                courses.forEach { course ->
+                    val courseColor = Color.decode(course.courseColor ?: "#ffffff")
+
+                    println(
+                        "${course.id}: ${rgbbg(courseColor.red, courseColor.green, courseColor.blue)} ${course.name} $RC"
+                    )
+                }
+
+                return
+            }
+
+            "select-courses" -> {
+                val selectedCourses = args.slice(1 until args.size).map(String::toIntOrNull)
+
+                if (selectedCourses.any { it == null }) {
+                    System.err.println("Invalid courses selected!")
+                    return
+                }
+
+                println("Found ${selectedCourses.size} selected courses, adding to config!")
+
+                val configFile = File("config.json")
+                val configText = configFile.readText()
+                val parsedConfig = Json.decodeFromString<Config>(configText)
+
+                parsedConfig.apply { allowedCourses = selectedCourses as MutableList<Int> }
+
+                val parsedConfigText = Json.encodeToString(parsedConfig)
+                configFile.writeText(parsedConfigText)
+
+                println("Config saved!")
+                return
+            }
+        }
+    }
+
     val courses =
         try {
-            getCanvasClasses()
+            getCanvasClasses().filter {
+                it.id != null && config.allowedCourses?.contains(it.id) == true
+            }
         } catch (ex: Exception) {
             ex.printStackTrace()
             exitProcess(-1)
@@ -270,7 +320,6 @@ suspend fun getCanvasClasses(): List<Course> {
     for (course in courses) {
         val courseColor =
             try {
-                println("Finding ${course.id}")
                 courseColors.getString("course_${course.id}")
             } catch (_: Exception) {
                 null
@@ -279,5 +328,5 @@ suspend fun getCanvasClasses(): List<Course> {
         course.courseColor = courseColor
     }
 
-    return courses.filter { it.id != null && config.allowedCourses?.contains(it.id) == true }
+    return courses
 }

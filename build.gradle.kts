@@ -1,10 +1,11 @@
 plugins {
     kotlin("jvm") version "2.0.21"
     kotlin("plugin.serialization") version "2.0.20"
+    id("com.gradleup.shadow") version "9.0.0-beta6"
 }
 
 group = "dev.ajkneisl"
-version = "1.0-SNAPSHOT"
+version = "1.0"
 
 repositories {
     mavenCentral()
