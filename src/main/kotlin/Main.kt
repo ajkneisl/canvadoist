@@ -8,14 +8,14 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
-import kotlinx.serialization.json.Json
-import org.json.JSONArray
-import org.json.JSONObject
 import java.awt.Color
 import java.io.File
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-
+import kotlin.system.exitProcess
+import kotlinx.serialization.json.Json
+import org.json.JSONArray
+import org.json.JSONObject
 
 val httpClient =
     HttpClient(CIO) { install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
@@ -26,7 +26,14 @@ val config by lazy {
 }
 
 suspend fun main() {
-    val courses = getCanvasClasses()
+    val courses =
+        try {
+            getCanvasClasses()
+        } catch (ex: Exception) {
+            ex.printStackTrace()
+            exitProcess(-1)
+        }
+
     val projects = getTodoistProjects()
 
     for (course in courses) {
@@ -34,7 +41,7 @@ suspend fun main() {
 
         println("${rgbbg(courseColor.red, courseColor.green, courseColor.blue)} ${course.name} $RC")
 
-        val todoistCourseName = course.name.split(" ").take(2).joinToString(" ")
+        val todoistCourseName = course.name!!.split(" ").take(2).joinToString(" ")
         val todoistColor = nearestColor(courseColor)
         val todoistProject =
             projects
@@ -65,7 +72,13 @@ suspend fun main() {
                 tasks
             }
 
-        val assignments = getCanvasAssignments(course.id)
+        val assignments =
+            try {
+                getCanvasAssignments(course.id!!)
+            } catch (ex: Exception) {
+                ex.printStackTrace()
+                exitProcess(-2)
+            }
 
         print("Found $U${assignments.length()}$RC assignments. ")
 
@@ -85,7 +98,7 @@ suspend fun main() {
             val dueAt =
                 try {
                     assignment.getString("due_at")
-                } catch (ex: Exception) {
+                } catch (_: Exception) {
                     noSubmissionDate++
                     continue
                 }
@@ -116,32 +129,32 @@ suspend fun main() {
                 }
             } catch (_: Exception) {}
 
-            if (existingTask == null && !isLocked && !submitted) {
+            val dueAtDate = LocalDate.parse(dueAt, DateTimeFormatter.ISO_DATE_TIME)
+            // only allow old assignments up to 7 days old
+            val notInPast = dueAtDate > LocalDate.now().minusDays(7)
+
+            if (existingTask == null && !isLocked && !submitted && notInPast) {
                 createTask(projectId, assignmentName, dueAt, detectPriority(name))
                 createdTask++
             } else if (existingTask != null) {
                 val date = existingTask.getJSONObject("deadline").getString("date")
 
-                val existingDate = LocalDate.parse(dueAt, DateTimeFormatter.ISO_DATE_TIME)
                 val assignmentDate =
                     LocalDate.parse(date, DateTimeFormatter.ofPattern("yyyy-MM-dd"))
 
-                println("$existingDate $assignmentDate")
-
                 // when an assignment's date changes
-                if (existingDate != assignmentDate) {
+                if (dueAtDate != assignmentDate) {
                     updateTask(existingTask.getString("id"), "deadline_date" to dueAt)
                     updatedTask++
                 }
             }
         }
 
-        print(
-            "Created $U$createdTask$RC tasks and updated $U$updatedTask$RC tasks.\n"
-        )
+        print("Created $U$createdTask$RC tasks and updated $U$updatedTask$RC tasks.\n")
     }
 }
 
+/** Update part of a Todoist [taskID]. */
 suspend fun updateTask(taskID: String, attr: Pair<String, String>) {
     httpClient.post("https://api.todoist.com/rest/v2/tasks/$taskID") {
         header("Authorization", "Bearer ${config.todoistToken}")
@@ -151,6 +164,7 @@ suspend fun updateTask(taskID: String, attr: Pair<String, String>) {
     }
 }
 
+/** Get the Todoist priority from a Canvas assignment [name]. */
 fun detectPriority(name: String): Int {
     return when {
         name.contains("exam") || name.contains("report") || name.contains("quiz") -> 1
@@ -160,6 +174,7 @@ fun detectPriority(name: String): Int {
     }
 }
 
+/** Create a task for a [projectId]. */
 suspend fun createTask(
     projectId: String,
     name: String,
@@ -183,6 +198,7 @@ suspend fun createTask(
         .let { JSONObject() }
 }
 
+/** Get the tasks from a Todoist [projectId]. */
 suspend fun getTasks(projectId: String): JSONArray {
     return httpClient
         .get("https://api.todoist.com/rest/v2/tasks") {
@@ -194,6 +210,7 @@ suspend fun getTasks(projectId: String): JSONArray {
         .let { JSONArray(it) }
 }
 
+/** Get a [course]'s Canvas assignments. */
 suspend fun getCanvasAssignments(course: Int): JSONArray {
     return httpClient
         .get("${config.canvasUrl}/api/v1/courses/$course/assignments") {
@@ -207,6 +224,7 @@ suspend fun getCanvasAssignments(course: Int): JSONArray {
         .let { JSONArray(it) }
 }
 
+/** Create a Todoist project with a specified [name] and [color]. */
 suspend fun createTodoistProject(name: String, color: String): JSONObject {
     return httpClient
         .post("https://api.todoist.com/rest/v2/projects") {
@@ -217,6 +235,7 @@ suspend fun createTodoistProject(name: String, color: String): JSONObject {
         .let { JSONObject(it.bodyAsText()) }
 }
 
+/** Get the user's Todoist projects. */
 suspend fun getTodoistProjects(): JSONArray {
     return httpClient
         .get("https://api.todoist.com/rest/v2/projects") {
@@ -226,6 +245,7 @@ suspend fun getTodoistProjects(): JSONArray {
         .let { JSONArray(it) }
 }
 
+/** Get the user's Canvas [Course]. Automatically fill in their class color. */
 suspend fun getCanvasClasses(): List<Course> {
     val courses: List<Course> =
         httpClient
@@ -250,13 +270,14 @@ suspend fun getCanvasClasses(): List<Course> {
     for (course in courses) {
         val courseColor =
             try {
+                println("Finding ${course.id}")
                 courseColors.getString("course_${course.id}")
-            } catch (ex: Exception) {
+            } catch (_: Exception) {
                 null
             }
 
         course.courseColor = courseColor
     }
 
-    return courses
+    return courses.filter { it.id != null && config.allowedCourses?.contains(it.id) == true }
 }
